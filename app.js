@@ -102,6 +102,17 @@ async function getSurahWithAudio(surahNumber, reciterId) {
   return result;
 }
 
+async function getSurahTranslation(surahNumber, edition) {
+  const cacheKey = `tr_translate_${edition}_${surahNumber}`;
+  const cached = store.get(cacheKey, null);
+  if (cached) return cached;
+  const data = await fetchJSON(`${API}/surah/${surahNumber}/${edition}`);
+  const map = {};
+  data.data.ayahs.forEach(a => { map[a.numberInSurah] = a.text; });
+  try { store.set(cacheKey, map); } catch { /* تخزين ممتلئ */ }
+  return map;
+}
+
 /* ---------------- تطبيع النص العربي (لمطابقة تقريبية في التسميع) ---------------- */
 function normalizeArabic(str) {
   return (str || "")
@@ -173,6 +184,9 @@ route("home", async () => {
       <button class="action-card" id="cardReciter">
         <div class="ic">🎙</div><b>اختيار القارئ</b><span>${state.reciter ? state.reciter.name : "لم يتم الاختيار"}</span>
       </button>
+      <button class="action-card" id="cardVideo">
+        <div class="ic">🎬</div><b>اصنع فيديو آية</b><span>خلفية متحركة + صوت</span>
+      </button>
     </div>
     <div class="section-title"><h3>مراجعات اليوم</h3><a id="goTracker">عرض الكل</a></div>
     <div id="dueArea" class="due-list"><div class="loading">جارِ التحميل…</div></div>
@@ -184,6 +198,7 @@ route("home", async () => {
   };
   document.getElementById("cardSurahs").onclick = () => navigate("#/surahs");
   document.getElementById("cardReciter").onclick = () => openReciterSheet();
+  document.getElementById("cardVideo").onclick = () => navigate(`#/video/${state.lastRead ? state.lastRead.surah : 1}`);
   document.getElementById("goTracker").onclick = () => navigate("#/tracker");
   renderDueList();
 });
@@ -292,6 +307,7 @@ route("surah", async (parts) => {
       <button class="chip" id="chipTikrar">🔁 تكرار مخصص</button>
       <button class="chip" id="chipTasmee">🎤 تسميع</button>
       <button class="chip" id="chipTest">✎ اختبر نفسك</button>
+      <button class="chip" id="chipVideo">🎬 فيديو الآية</button>
       <button class="chip" id="chipMemorize">◈ وضع حفظ محفوظ</button>
     </div>
     <div id="mushafArea" class="loading">جارِ تحميل السورة…</div>
@@ -301,6 +317,7 @@ route("surah", async (parts) => {
   document.getElementById("chipTikrar").onclick = () => openTikrarSheet(surahNumber);
   document.getElementById("chipTasmee").onclick = () => navigate(`#/tasmee/${surahNumber}${selection.from ? `?from=${selection.from}&to=${selection.to}` : ""}`);
   document.getElementById("chipTest").onclick = () => navigate(`#/test/${surahNumber}${selection.from ? `?from=${selection.from}&to=${selection.to}` : ""}`);
+  document.getElementById("chipVideo").onclick = () => navigate(`#/video/${surahNumber}${selection.from ? `?from=${selection.from}&to=${selection.to}` : ""}`);
   document.getElementById("chipMemorize").onclick = () => toggleMemorizeSelection(surahNumber);
 
   await renderMushaf(surahNumber, from, to, reviewId);
@@ -736,6 +753,353 @@ route("test", async (parts) => {
   });
   document.getElementById("revealAll").onclick = () => document.querySelectorAll(".blank").forEach(b => b.classList.add("revealed"));
 });
+
+/* ================= صانع فيديو الآية ================= */
+let videoState = null; // { surahNumber, ayahs, translations, bgMode, bgImage, bgVideoEl, includeTranslation }
+
+route("video", async (parts) => {
+  const surahNumber = parseInt(parts[0]);
+  const qFrom = qs("from") ? parseInt(qs("from")) : 1;
+  const qTo = qs("to") ? parseInt(qs("to")) : qFrom;
+
+  if (!state.reciter) await ensureDefaultReciter();
+
+  $app.innerHTML = `
+    <div class="appbar"><button class="back" onclick="navigate('#/surah/${surahNumber}')">‹</button><h1>صانع فيديو الآية</h1></div>
+    <div id="videoArea" class="loading">جارِ التحميل…</div>
+  `;
+
+  let data;
+  try { data = await getSurahWithAudio(surahNumber, state.reciter.identifier); }
+  catch { document.getElementById("videoArea").innerHTML = `<div class="empty-note">تعذّر تحميل السورة.</div>`; return; }
+
+  videoState = {
+    surahNumber, surahName: data.name, englishName: data.englishName,
+    allAyahs: data.ayahs, translations: null, includeTranslation: true,
+    bgMode: "image", bgImage: null, bgVideoEl: null
+  };
+
+  const area = document.getElementById("videoArea");
+  area.innerHTML = `
+    <div class="panel">
+      <h4>نطاق الآيات</h4>
+      <div class="range-row">
+        <select id="vFrom">${data.ayahs.map(a => `<option value="${a.numberInSurah}" ${a.numberInSurah===qFrom?"selected":""}>من آية ${a.numberInSurah}</option>`).join("")}</select>
+        <select id="vTo">${data.ayahs.map(a => `<option value="${a.numberInSurah}" ${a.numberInSurah===qTo?"selected":""}>إلى آية ${a.numberInSurah}</option>`).join("")}</select>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--parchment);margin-top:4px;">
+        <input type="checkbox" id="vTranslate" checked style="width:16px;height:16px;"> إظهار الترجمة الإنجليزية
+      </label>
+    </div>
+
+    <div class="panel">
+      <h4>القارئ</h4>
+      <button class="btn-secondary" id="vReciter" style="margin-top:0">🎙 ${state.reciter.name}</button>
+    </div>
+
+    <div class="panel">
+      <h4>الخلفية</h4>
+      <div class="reader-toolbar" style="padding:0 0 10px">
+        <button class="chip active" id="vTabImage">صورة (تكبير تلقائي)</button>
+        <button class="chip" id="vTabVideo">فيديو</button>
+      </div>
+      <input type="file" id="vBgFile" accept="image/*" style="width:100%;color:var(--parchment);font-size:12.5px;">
+      <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.8;" id="vBgHint">
+        الصورة هتتحرك تلقائيًا (زووم بطيء) طول مدة التلاوة.
+      </div>
+    </div>
+
+    <div class="video-stage-wrap">
+      <div class="video-stage">
+        <canvas id="vCanvas" width="720" height="1280"></canvas>
+        <div class="video-stage-empty" id="vStageEmpty">ارفع خلفية لبدء المعاينة</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <button class="btn-primary" id="vGenerate" disabled>أنشئ الفيديو</button>
+      <div id="vStatus" style="font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.8;">اختر نطاق الآيات وارفع خلفية.</div>
+      <div id="vOutput" style="display:none;margin-top:14px;">
+        <video id="vResult" controls style="width:100%;border-radius:14px;border:1px solid var(--line);"></video>
+        <a id="vDownload" download="ترتيل.webm" class="btn-primary" style="display:block;text-align:center;text-decoration:none;margin-top:10px;background:var(--sage);color:#0c1a12;">تنزيل الفيديو</a>
+      </div>
+    </div>
+    <div class="notice">التسجيل بيحصل داخل المتصفح مباشرة، وبيعتمد على قدرة المتصفح على التقاط صوت التلاوة أثناء التسجيل. لو الصوت مايظهرش في الفيديو الناتج، جرّب متصفح Chrome، أو قلّل نطاق الآيات وأعد المحاولة.</div>
+  `;
+
+  document.getElementById("vReciter").onclick = () => openReciterSheet(() => routes.video([String(surahNumber)]));
+
+  document.getElementById("vFrom").onchange = document.getElementById("vTo").onchange = checkVideoReady;
+  document.getElementById("vTranslate").onchange = (e) => { videoState.includeTranslation = e.target.checked; drawVideoPreview(); };
+
+  document.getElementById("vTabImage").onclick = () => setVideoBgTab("image");
+  document.getElementById("vTabVideo").onclick = () => setVideoBgTab("video");
+
+  document.getElementById("vBgFile").onchange = handleVideoBgUpload;
+  document.getElementById("vGenerate").onclick = generateAyahVideo;
+
+  checkVideoReady();
+});
+
+function setVideoBgTab(mode) {
+  videoState.bgMode = mode;
+  document.getElementById("vTabImage").classList.toggle("active", mode === "image");
+  document.getElementById("vTabVideo").classList.toggle("active", mode === "video");
+  const input = document.getElementById("vBgFile");
+  input.accept = mode === "image" ? "image/*" : "video/*";
+  input.value = "";
+  videoState.bgImage = null; videoState.bgVideoEl = null;
+  document.getElementById("vBgHint").textContent = mode === "image"
+    ? "الصورة هتتحرك تلقائيًا (زووم بطيء) طول مدة التلاوة."
+    : "الفيديو هيتكرر (loop) لو مدته أقصر من التلاوة، وصوته الأصلي هيتكتم.";
+  checkVideoReady();
+}
+
+function handleVideoBgUpload() {
+  const f = document.getElementById("vBgFile").files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  if (videoState.bgMode === "image") {
+    const img = new Image();
+    img.onload = () => { videoState.bgImage = img; drawVideoPreview(); checkVideoReady(); };
+    img.src = url;
+  } else {
+    const v = document.createElement("video");
+    v.src = url; v.muted = true; v.loop = true; v.playsInline = true;
+    v.addEventListener("loadeddata", () => { videoState.bgVideoEl = v; drawVideoPreview(); checkVideoReady(); });
+  }
+}
+
+function checkVideoReady() {
+  const btn = document.getElementById("vGenerate");
+  if (!btn) return;
+  const ready = !!(videoState.bgImage || videoState.bgVideoEl);
+  btn.disabled = !ready;
+  drawVideoPreview();
+}
+
+function roundRectPath(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function wrapText(c, text, x, y, maxWidth, lineHeight) {
+  const words = text.split(" ");
+  let line = "", lines = [];
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (c.measureText(test).width > maxWidth && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  const startY = y - (lines.length - 1) * lineHeight / 2;
+  lines.forEach((l, i) => c.fillText(l, x, startY + i * lineHeight));
+  return lines;
+}
+
+function drawVideoFrame(canvas, ayahText, translationText, label, badgeNumber, t) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (videoState.bgMode === "video" && videoState.bgVideoEl) {
+    const v = videoState.bgVideoEl;
+    const cover = Math.max(w / v.videoWidth, h / v.videoHeight) || 1;
+    const dw = v.videoWidth * cover, dh = v.videoHeight * cover;
+    ctx.drawImage(v, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  } else if (videoState.bgImage) {
+    const img = videoState.bgImage;
+    const breathe = 1 + 0.05 * (1 + Math.sin(t / 4.2));
+    const cover = Math.max(w / img.width, h / img.height) * breathe;
+    const dw = img.width * cover, dh = img.height * cover;
+    ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  } else {
+    ctx.fillStyle = "#0B3B36";
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(6,10,9,0.55)");
+  grad.addColorStop(0.4, "rgba(6,10,9,0.12)");
+  grad.addColorStop(0.62, "rgba(6,10,9,0.55)");
+  grad.addColorStop(1, "rgba(6,10,9,0.88)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(228,199,102,0.9)";
+  ctx.font = "600 24px Cairo, sans-serif";
+  ctx.fillText(label, w / 2, 92);
+
+  const cardX = 46, cardY = h * 0.36, cardW = w - 92, cardH = h * 0.34;
+  ctx.fillStyle = "rgba(11,20,18,0.55)";
+  roundRectPath(ctx, cardX, cardY, cardW, cardH, 22);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(201,162,39,0.4)";
+  ctx.lineWidth = 1.4;
+  roundRectPath(ctx, cardX, cardY, cardW, cardH, 22);
+  ctx.stroke();
+
+  ctx.fillStyle = "#FBF6EC";
+  ctx.font = "700 44px 'Amiri Quran', serif";
+  ctx.direction = "rtl";
+  const arLines = wrapText(ctx, ayahText, w / 2, cardY + cardH * 0.35, cardW - 70, 56);
+
+  // badge with ayah number
+  const bx = w / 2, by = cardY + cardH * 0.35 + (arLines.length) * 56 * 0.5 + 40;
+  ctx.beginPath();
+  ctx.arc(bx, by, 20, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(201,162,39,0.18)";
+  ctx.fill();
+  ctx.strokeStyle = "#E4C766";
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+  ctx.fillStyle = "#E4C766";
+  ctx.font = "700 16px Cairo, sans-serif";
+  ctx.direction = "ltr";
+  ctx.fillText(String(badgeNumber), bx, by + 5);
+
+  if (translationText) {
+    ctx.fillStyle = "rgba(251,246,236,0.82)";
+    ctx.font = "400 20px Cairo, sans-serif";
+    ctx.direction = "ltr";
+    wrapText(ctx, translationText, w / 2, cardY + cardH * 0.86, cardW - 90, 28);
+  }
+}
+
+function drawVideoPreview() {
+  const canvas = document.getElementById("vCanvas");
+  const empty = document.getElementById("vStageEmpty");
+  if (!canvas) return;
+  if (!videoState.bgImage && !videoState.bgVideoEl) { if (empty) empty.style.display = "flex"; return; }
+  if (empty) empty.style.display = "none";
+
+  const fromN = parseInt(document.getElementById("vFrom")?.value || 1);
+  const ayah = videoState.allAyahs.find(a => a.numberInSurah === fromN) || videoState.allAyahs[0];
+  const label = `سُورَة ${videoState.surahName} — ${videoState.englishName}`;
+  drawVideoFrame(canvas, ayah.text, videoState.includeTranslation ? "…" : null, label, ayah.numberInSurah, 0);
+}
+
+async function generateAyahVideo() {
+  const btn = document.getElementById("vGenerate");
+  const statusEl = document.getElementById("vStatus");
+  const output = document.getElementById("vOutput");
+  btn.disabled = true;
+  output.style.display = "none";
+  const setStatus = (m) => { statusEl.textContent = m; };
+
+  const fromN = parseInt(document.getElementById("vFrom").value);
+  const toN = parseInt(document.getElementById("vTo").value);
+  const lo = Math.min(fromN, toN), hi = Math.max(fromN, toN);
+
+  const queue = videoState.allAyahs.filter(a => a.numberInSurah >= lo && a.numberInSurah <= hi && a.audio);
+  if (!queue.length) { setStatus("لا يوجد صوت متاح لهذا النطاق."); btn.disabled = false; return; }
+
+  if (videoState.includeTranslation && !videoState.translations) {
+    setStatus("بنجيب الترجمة…");
+    try { videoState.translations = await getSurahTranslation(videoState.surahNumber, "en.sahih"); }
+    catch { videoState.translations = {}; }
+  }
+
+  const canvas = document.getElementById("vCanvas");
+  try { await document.fonts.load("700 44px 'Amiri Quran'"); await document.fonts.load("400 20px Cairo"); } catch {}
+
+  const label = `سُورَة ${videoState.surahName} — ${videoState.englishName}`;
+
+  const vAudio = new Audio();
+  vAudio.crossOrigin = "anonymous";
+  vAudio.preload = "auto";
+
+  setStatus("بنجهّز المسجّل…");
+  const canvasStream = canvas.captureStream(30);
+  let audioStream = null;
+  try { audioStream = vAudio.captureStream ? vAudio.captureStream() : vAudio.mozCaptureStream(); }
+  catch (e) {}
+
+  if (!audioStream) {
+    setStatus("تعذّر تسجيل الصوت في هذا المتصفح. جرّب Chrome على الموبايل أو الكمبيوتر.");
+    btn.disabled = false;
+    return;
+  }
+
+  const mimeOptions = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  const mimeType = mimeOptions.find(m => MediaRecorder.isTypeSupported(m)) || "video/webm";
+  const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 4_000_000 });
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+
+  let stopped = false;
+  recorder.onstop = () => {
+    stopped = true;
+    if (videoState.bgVideoEl) videoState.bgVideoEl.pause();
+    const blob = new Blob(chunks, { type: "video/webm" });
+    const url = URL.createObjectURL(blob);
+    document.getElementById("vResult").src = url;
+    document.getElementById("vDownload").href = url;
+    output.style.display = "block";
+    setStatus("تم إنشاء الفيديو ✅");
+    btn.disabled = false;
+  };
+
+  let audioTrackAdded = false;
+  let queueIndex = 0;
+  let globalT0 = performance.now();
+
+  function playNext() {
+    const item = queue[queueIndex];
+    if (!item) { recorder.stop(); return; }
+    vAudio.src = item.audio;
+    vAudio.load();
+    vAudio.oncanplaythrough = () => {
+      vAudio.oncanplaythrough = null;
+      if (!audioTrackAdded) {
+        audioStream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
+        audioTrackAdded = true;
+      }
+      if (queueIndex === 0 && recorder.state === "inactive") {
+        recorder.start();
+        if (videoState.bgMode === "video" && videoState.bgVideoEl) {
+          videoState.bgVideoEl.currentTime = 0; videoState.bgVideoEl.play().catch(() => {});
+        }
+        loop();
+      }
+      vAudio.play().catch(() => {
+        setStatus("تعذّر تشغيل الصوت تلقائيًا — اضغط في أي مكان بالصفحة ثم أعد المحاولة.");
+      });
+    };
+    vAudio.onended = () => {
+      queueIndex++;
+      if (queueIndex < queue.length) playNext();
+      else recorder.stop();
+    };
+    vAudio.onerror = () => {
+      setStatus(`تعذّر تحميل صوت الآية ${item.numberInSurah}، بنكمل اللي بعدها.`);
+      queueIndex++;
+      if (queueIndex < queue.length) playNext(); else recorder.stop();
+    };
+  }
+
+  function loop() {
+    if (stopped) return;
+    const t = (performance.now() - globalT0) / 1000;
+    const item = queue[queueIndex] || queue[queue.length - 1];
+    const translationText = videoState.includeTranslation
+      ? (videoState.translations && videoState.translations[item.numberInSurah]
+          ? `"${videoState.translations[item.numberInSurah]}" (${videoState.surahNumber}:${item.numberInSurah})`
+          : `(${videoState.surahNumber}:${item.numberInSurah})`)
+      : null;
+    drawVideoFrame(canvas, item.text, translationText, label, item.numberInSurah, t);
+    requestAnimationFrame(loop);
+  }
+
+  setStatus(`جاري تسجيل ${queue.length} آية…`);
+  playNext();
+}
 
 /* ================= المراجعة والحفظ (Tracker) ================= */
 route("tracker", async () => {
