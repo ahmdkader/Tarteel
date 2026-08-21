@@ -329,6 +329,31 @@ input, textarea{ font-family: inherit; }
   text-align:center; padding:24px; color:var(--muted); font-size:12.5px;
 }
 
+/* ---------- مصحف بصفحات (يمين/شمال) ---------- */
+.mushaf-flip-wrap{ margin: 4px 14px 12px; touch-action: pan-y; }
+.mushaf-flip-page .mushaf-page{ margin: 0; min-height: 60vh; }
+.page-surah-divider{
+  display:block; text-align:center; font-family: var(--font-ui); font-size:13px;
+  font-weight:700; color: var(--gold); background: rgba(201,162,39,0.1);
+  border:1px solid var(--line); border-radius:10px; padding:6px 10px; margin: 14px 0 10px;
+}
+.mushaf-page-footer{
+  text-align:center; font-family: var(--font-ui); font-size:12px; color: var(--ink-soft);
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(0,0,0,0.12);
+}
+.mushaf-nav{
+  display:flex; align-items:center; gap:10px; margin: 0 18px 24px; justify-content:space-between;
+}
+.mushaf-nav .round-btn{ width:auto; padding: 0 16px; border-radius: 12px; font-size:13px; }
+.mushaf-page-jump{
+  display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted);
+  background: var(--bg-deep-3); border:1px solid var(--line); border-radius:10px; padding:6px 10px;
+}
+.mushaf-page-jump input{
+  width:48px; background:none; border:none; outline:none; color:var(--parchment);
+  font-size:13px; text-align:center; font-family: var(--font-ui);
+}
+
 @media (min-width: 720px){
   #app{ max-width:520px; margin:0 auto; }
   .bottom-nav{ max-width:520px; margin:0 auto; }

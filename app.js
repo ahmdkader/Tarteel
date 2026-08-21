@@ -88,6 +88,7 @@ async function getSurahWithAudio(surahNumber, reciterId) {
     number: a.number,
     numberInSurah: a.numberInSurah,
     text: a.text,
+    page: a.page,
     audio: audioAyahs[i] ? audioAyahs[i].audio : null
   }));
 
@@ -111,6 +112,26 @@ async function getSurahTranslation(surahNumber, edition) {
   data.data.ayahs.forEach(a => { map[a.numberInSurah] = a.text; });
   try { store.set(cacheKey, map); } catch { /* تخزين ممتلئ */ }
   return map;
+}
+
+async function getMushafPage(pageNum) {
+  const cacheKey = `tr_mushafpage_${pageNum}`;
+  const cached = store.get(cacheKey, null);
+  if (cached) return cached;
+  const data = await fetchJSON(`${API}/page/${pageNum}/quran-uthmani`);
+  const result = {
+    number: pageNum,
+    ayahs: data.data.ayahs.map(a => ({
+      number: a.number,
+      numberInSurah: a.numberInSurah,
+      text: a.text,
+      surahNumber: a.surah.number,
+      surahName: a.surah.name,
+      surahEnglishName: a.surah.englishName
+    }))
+  };
+  try { store.set(cacheKey, result); } catch { /* تخزين ممتلئ */ }
+  return result;
 }
 
 /* ---------------- تطبيع النص العربي (لمطابقة تقريبية في التسميع) ---------------- */
@@ -148,6 +169,7 @@ function parseHash() {
 function render() {
   stopAudio();
   stopListening();
+  stopVideoPreviewLoop();
   const parts = parseHash();
   const top = parts[0] || "home";
   document.querySelectorAll(".nav-btn").forEach(b => {
@@ -187,6 +209,9 @@ route("home", async () => {
       <button class="action-card" id="cardVideo">
         <div class="ic">🎬</div><b>اصنع فيديو آية</b><span>خلفية متحركة + صوت</span>
       </button>
+      <button class="action-card" id="cardMushafPages">
+        <div class="ic">📖</div><b>تصفّح كصفحات مصحف</b><span>مثل مصحف المدينة — يمين وشمال</span>
+      </button>
     </div>
     <div class="section-title"><h3>مراجعات اليوم</h3><a id="goTracker">عرض الكل</a></div>
     <div id="dueArea" class="due-list"><div class="loading">جارِ التحميل…</div></div>
@@ -199,6 +224,7 @@ route("home", async () => {
   document.getElementById("cardSurahs").onclick = () => navigate("#/surahs");
   document.getElementById("cardReciter").onclick = () => openReciterSheet();
   document.getElementById("cardVideo").onclick = () => navigate(`#/video/${state.lastRead ? state.lastRead.surah : 1}`);
+  document.getElementById("cardMushafPages").onclick = () => navigate(`#/page/${store.get("tr_last_mushaf_page", 1)}`);
   document.getElementById("goTracker").onclick = () => navigate("#/tracker");
   renderDueList();
 });
@@ -308,6 +334,7 @@ route("surah", async (parts) => {
       <button class="chip" id="chipTasmee">🎤 تسميع</button>
       <button class="chip" id="chipTest">✎ اختبر نفسك</button>
       <button class="chip" id="chipVideo">🎬 فيديو الآية</button>
+      <button class="chip" id="chipMushafPage">📖 كصفحة مصحف</button>
       <button class="chip" id="chipMemorize">◈ وضع حفظ محفوظ</button>
     </div>
     <div id="mushafArea" class="loading">جارِ تحميل السورة…</div>
@@ -318,6 +345,7 @@ route("surah", async (parts) => {
   document.getElementById("chipTasmee").onclick = () => navigate(`#/tasmee/${surahNumber}${selection.from ? `?from=${selection.from}&to=${selection.to}` : ""}`);
   document.getElementById("chipTest").onclick = () => navigate(`#/test/${surahNumber}${selection.from ? `?from=${selection.from}&to=${selection.to}` : ""}`);
   document.getElementById("chipVideo").onclick = () => navigate(`#/video/${surahNumber}${selection.from ? `?from=${selection.from}&to=${selection.to}` : ""}`);
+  document.getElementById("chipMushafPage").onclick = () => jumpToSurahMushafPage(surahNumber);
   document.getElementById("chipMemorize").onclick = () => toggleMemorizeSelection(surahNumber);
 
   await renderMushaf(surahNumber, from, to, reviewId);
@@ -380,6 +408,92 @@ function refreshSelectionHighlight() {
 function toArabicDigits(num) {
   const d = ["٠","١","٢","٣","٤","٥","٦","٧","٨","٩"];
   return String(num).split("").map(c => d[+c] ?? c).join("");
+}
+
+/* ================= المصحف بصفحات (مثل مصحف المدينة — يمين/شمال) ================= */
+const MUSHAF_LAST_PAGE = 604;
+let mushafSwipeStartX = null;
+
+route("page", async (parts) => {
+  let pageNum = parseInt(parts[0]);
+  if (!pageNum || isNaN(pageNum)) pageNum = store.get("tr_last_mushaf_page", 1);
+  pageNum = Math.min(MUSHAF_LAST_PAGE, Math.max(1, pageNum));
+  await renderMushafPage(pageNum);
+});
+
+async function renderMushafPage(pageNum) {
+  store.set("tr_last_mushaf_page", pageNum);
+  $app.innerHTML = `
+    <div class="appbar">
+      <button class="back" onclick="navigate('#/surahs')">‹</button>
+      <div><h1>المصحف الشريف</h1><div class="sub" id="pageSubtitle">صفحة ${toArabicDigits(pageNum)}</div></div>
+    </div>
+    <div class="mushaf-flip-wrap">
+      <div class="mushaf-flip-page" id="mushafFlipArea"><div class="loading">جارِ تحميل الصفحة…</div></div>
+    </div>
+    <div class="mushaf-nav">
+      <button class="round-btn" id="btnNextPage" ${pageNum >= MUSHAF_LAST_PAGE ? "disabled" : ""}>التالية ›</button>
+      <div class="mushaf-page-jump">
+        <input type="number" id="pageJumpInput" min="1" max="${MUSHAF_LAST_PAGE}" value="${pageNum}">
+        <span>/ ٦٠٤</span>
+      </div>
+      <button class="round-btn primary" id="btnPrevPage" ${pageNum <= 1 ? "disabled" : ""}>‹ السابقة</button>
+    </div>
+  `;
+
+  const area = document.getElementById("mushafFlipArea");
+  let page;
+  try { page = await getMushafPage(pageNum); }
+  catch { area.innerHTML = `<div class="empty-note">تعذّر تحميل الصفحة. تحقّق من الاتصال.</div>`; return; }
+
+  document.getElementById("pageSubtitle").textContent =
+    `صفحة ${toArabicDigits(pageNum)} — سُورَة ${page.ayahs[0].surahName}`;
+
+  let html = "";
+  let lastSurah = null;
+  page.ayahs.forEach(a => {
+    if (a.surahNumber !== lastSurah) {
+      html += `<div class="page-surah-divider">سُورَة ${a.surahName}</div>`;
+      if (a.numberInSurah === 1 && a.surahNumber !== 1 && a.surahNumber !== 9) {
+        html += `<span class="basmala">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</span>`;
+      }
+      lastSurah = a.surahNumber;
+    }
+    html += `<span class="ayah" data-surah="${a.surahNumber}" data-n="${a.numberInSurah}">${a.text}<span class="ayah-badge">${toArabicDigits(a.numberInSurah)}</span></span> `;
+  });
+  area.innerHTML = `<div class="mushaf-page" id="mushafPage">${html}</div>
+    <div class="mushaf-page-footer">${toArabicDigits(pageNum)}</div>`;
+
+  document.querySelectorAll("#mushafPage .ayah").forEach(el => {
+    el.onclick = () => navigate(`#/surah/${el.dataset.surah}?from=${el.dataset.n}&to=${el.dataset.n}`);
+  });
+
+  document.getElementById("btnNextPage").onclick = () => { if (pageNum < MUSHAF_LAST_PAGE) navigate(`#/page/${pageNum + 1}`); };
+  document.getElementById("btnPrevPage").onclick = () => { if (pageNum > 1) navigate(`#/page/${pageNum - 1}`); };
+  document.getElementById("pageJumpInput").onchange = (e) => {
+    const n = Math.min(MUSHAF_LAST_PAGE, Math.max(1, parseInt(e.target.value) || 1));
+    navigate(`#/page/${n}`);
+  };
+
+  const flipWrap = document.querySelector(".mushaf-flip-wrap");
+  flipWrap.ontouchstart = (e) => { mushafSwipeStartX = e.touches[0].clientX; };
+  flipWrap.ontouchend = (e) => {
+    if (mushafSwipeStartX === null) return;
+    const dx = e.changedTouches[0].clientX - mushafSwipeStartX;
+    mushafSwipeStartX = null;
+    if (Math.abs(dx) < 55) return;
+    if (dx < 0 && pageNum < MUSHAF_LAST_PAGE) navigate(`#/page/${pageNum + 1}`);   // سحب لليسار → الصفحة التالية
+    else if (dx > 0 && pageNum > 1) navigate(`#/page/${pageNum - 1}`);            // سحب لليمين → الصفحة السابقة
+  };
+}
+
+async function jumpToSurahMushafPage(surahNumber) {
+  try {
+    const data = await fetchJSON(`${API}/ayah/${surahNumber}:1/quran-uthmani`);
+    navigate(`#/page/${data.data.page}`);
+  } catch {
+    navigate(`#/page/1`);
+  }
 }
 
 function renderPlayerBar(surahNumber, reviewId) {
@@ -758,7 +872,7 @@ route("test", async (parts) => {
 let videoState = null; // { surahNumber, ayahs, translations, bgMode, bgImage, bgVideoEl, includeTranslation }
 
 route("video", async (parts) => {
-  const surahNumber = parseInt(parts[0]);
+  const surahNumber = parseInt(parts[0]) || 1;
   const qFrom = qs("from") ? parseInt(qs("from")) : 1;
   const qTo = qs("to") ? parseInt(qs("to")) : qFrom;
 
@@ -768,6 +882,9 @@ route("video", async (parts) => {
     <div class="appbar"><button class="back" onclick="navigate('#/surah/${surahNumber}')">‹</button><h1>صانع فيديو الآية</h1></div>
     <div id="videoArea" class="loading">جارِ التحميل…</div>
   `;
+
+  let surahList = [];
+  try { surahList = await getSurahList(); } catch { /* هنكمل من غير القائمة لو فشلت */ }
 
   let data;
   try { data = await getSurahWithAudio(surahNumber, state.reciter.identifier); }
@@ -781,6 +898,14 @@ route("video", async (parts) => {
 
   const area = document.getElementById("videoArea");
   area.innerHTML = `
+    <div class="panel">
+      <h4>السورة</h4>
+      <select id="vSurah" style="width:100%;">
+        ${(surahList.length ? surahList : [{ number: surahNumber, name: data.name, englishName: data.englishName }])
+          .map(s => `<option value="${s.number}" ${s.number === surahNumber ? "selected" : ""}>${s.number}. ${s.name} — ${s.englishName}</option>`).join("")}
+      </select>
+    </div>
+
     <div class="panel">
       <h4>نطاق الآيات</h4>
       <div class="range-row">
@@ -827,10 +952,15 @@ route("video", async (parts) => {
     <div class="notice">التسجيل بيحصل داخل المتصفح مباشرة، وبيعتمد على قدرة المتصفح على التقاط صوت التلاوة أثناء التسجيل. لو الصوت مايظهرش في الفيديو الناتج، جرّب متصفح Chrome، أو قلّل نطاق الآيات وأعد المحاولة.</div>
   `;
 
+  document.getElementById("vSurah").onchange = (e) => {
+    stopVideoPreviewLoop();
+    navigate(`#/video/${e.target.value}`);
+  };
+
   document.getElementById("vReciter").onclick = () => openReciterSheet(() => routes.video([String(surahNumber)]));
 
   document.getElementById("vFrom").onchange = document.getElementById("vTo").onchange = checkVideoReady;
-  document.getElementById("vTranslate").onchange = (e) => { videoState.includeTranslation = e.target.checked; drawVideoPreview(); };
+  document.getElementById("vTranslate").onchange = (e) => { videoState.includeTranslation = e.target.checked; drawVideoPreview(0); };
 
   document.getElementById("vTabImage").onclick = () => setVideoBgTab("image");
   document.getElementById("vTabVideo").onclick = () => setVideoBgTab("video");
@@ -861,12 +991,12 @@ function handleVideoBgUpload() {
   const url = URL.createObjectURL(f);
   if (videoState.bgMode === "image") {
     const img = new Image();
-    img.onload = () => { videoState.bgImage = img; drawVideoPreview(); checkVideoReady(); };
+    img.onload = () => { videoState.bgImage = img; checkVideoReady(); startVideoPreviewLoop(); };
     img.src = url;
   } else {
     const v = document.createElement("video");
     v.src = url; v.muted = true; v.loop = true; v.playsInline = true;
-    v.addEventListener("loadeddata", () => { videoState.bgVideoEl = v; drawVideoPreview(); checkVideoReady(); });
+    v.addEventListener("loadeddata", () => { videoState.bgVideoEl = v; checkVideoReady(); startVideoPreviewLoop(); });
   }
 }
 
@@ -875,7 +1005,7 @@ function checkVideoReady() {
   if (!btn) return;
   const ready = !!(videoState.bgImage || videoState.bgVideoEl);
   btn.disabled = !ready;
-  drawVideoPreview();
+  if (!videoPreviewRAF) drawVideoPreview(0);
 }
 
 function roundRectPath(c, x, y, w, h, r) {
@@ -972,7 +1102,10 @@ function drawVideoFrame(canvas, ayahText, translationText, label, badgeNumber, t
   }
 }
 
-function drawVideoPreview() {
+let videoPreviewRAF = null;
+let videoPreviewT0 = null;
+
+function drawVideoPreview(t) {
   const canvas = document.getElementById("vCanvas");
   const empty = document.getElementById("vStageEmpty");
   if (!canvas) return;
@@ -982,7 +1115,48 @@ function drawVideoPreview() {
   const fromN = parseInt(document.getElementById("vFrom")?.value || 1);
   const ayah = videoState.allAyahs.find(a => a.numberInSurah === fromN) || videoState.allAyahs[0];
   const label = `سُورَة ${videoState.surahName} — ${videoState.englishName}`;
-  drawVideoFrame(canvas, ayah.text, videoState.includeTranslation ? "…" : null, label, ayah.numberInSurah, 0);
+  drawVideoFrame(canvas, ayah.text, videoState.includeTranslation ? "…" : null, label, ayah.numberInSurah, t || 0);
+}
+
+// معاينة حية: الفيديو بيفضل شغّال ومتحرّك في المعاينة نفسها قبل التصدير،
+// مش بس فريم ثابت من أول لقطة.
+function startVideoPreviewLoop() {
+  stopVideoPreviewLoop();
+  if (videoState.bgMode === "video" && videoState.bgVideoEl) {
+    videoState.bgVideoEl.currentTime = 0;
+    videoState.bgVideoEl.play().catch(() => {});
+  }
+  videoPreviewT0 = performance.now();
+  const tick = () => {
+    drawVideoPreview((performance.now() - videoPreviewT0) / 1000);
+    videoPreviewRAF = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopVideoPreviewLoop() {
+  if (videoPreviewRAF) cancelAnimationFrame(videoPreviewRAF);
+  videoPreviewRAF = null;
+  if (videoState && videoState.bgVideoEl) videoState.bgVideoEl.pause();
+}
+
+// بنجيب الصوت كـ blob محلي قبل التسجيل. ده بيحل مشكلة كتم الصوت اللي بتحصل
+// لو المتصفح اعتبر مصدر الصوت "cross-origin" أثناء captureStream().
+async function prefetchAudioBlobs(queue, setStatus) {
+  const out = [];
+  for (let i = 0; i < queue.length; i++) {
+    const item = queue[i];
+    setStatus(`بنجهّز صوت الآية ${item.numberInSurah} (${i + 1}/${queue.length})…`);
+    try {
+      const res = await fetch(item.audio, { mode: "cors" });
+      if (!res.ok) throw new Error("bad-status");
+      const blob = await res.blob();
+      out.push({ ...item, playUrl: URL.createObjectURL(blob), local: true });
+    } catch {
+      out.push({ ...item, playUrl: item.audio, local: false });
+    }
+  }
+  return out;
 }
 
 async function generateAyahVideo() {
@@ -991,13 +1165,14 @@ async function generateAyahVideo() {
   const output = document.getElementById("vOutput");
   btn.disabled = true;
   output.style.display = "none";
+  stopVideoPreviewLoop();
   const setStatus = (m) => { statusEl.textContent = m; };
 
   const fromN = parseInt(document.getElementById("vFrom").value);
   const toN = parseInt(document.getElementById("vTo").value);
   const lo = Math.min(fromN, toN), hi = Math.max(fromN, toN);
 
-  const queue = videoState.allAyahs.filter(a => a.numberInSurah >= lo && a.numberInSurah <= hi && a.audio);
+  let queue = videoState.allAyahs.filter(a => a.numberInSurah >= lo && a.numberInSurah <= hi && a.audio);
   if (!queue.length) { setStatus("لا يوجد صوت متاح لهذا النطاق."); btn.disabled = false; return; }
 
   if (videoState.includeTranslation && !videoState.translations) {
@@ -1011,25 +1186,46 @@ async function generateAyahVideo() {
 
   const label = `سُورَة ${videoState.surahName} — ${videoState.englishName}`;
 
+  queue = await prefetchAudioBlobs(queue, setStatus);
+  const anyRemote = queue.some(q => !q.local);
+
   const vAudio = new Audio();
   vAudio.crossOrigin = "anonymous";
   vAudio.preload = "auto";
+  vAudio.src = queue[0].playUrl;
 
   setStatus("بنجهّز المسجّل…");
-  const canvasStream = canvas.captureStream(30);
-  let audioStream = null;
-  try { audioStream = vAudio.captureStream ? vAudio.captureStream() : vAudio.mozCaptureStream(); }
-  catch (e) {}
-
-  if (!audioStream) {
-    setStatus("تعذّر تسجيل الصوت في هذا المتصفح. جرّب Chrome على الموبايل أو الكمبيوتر.");
+  try {
+    await new Promise((resolve, reject) => {
+      vAudio.oncanplaythrough = resolve;
+      vAudio.onerror = () => reject(new Error("audio-load-failed"));
+      vAudio.load();
+      setTimeout(() => reject(new Error("timeout")), 15000);
+    });
+  } catch {
+    setStatus("تعذّر تحميل صوت القارئ. جرّب قارئ تاني أو تحقّق من الاتصال.");
     btn.disabled = false;
     return;
   }
 
+  let audioStream = null;
+  try { audioStream = vAudio.captureStream ? vAudio.captureStream() : vAudio.mozCaptureStream(); }
+  catch (e) {}
+
+  const canvasStream = canvas.captureStream(30);
+  const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
+
+  if (!audioTracks.length) {
+    setStatus("تعذّر تسجيل الصوت في هذا المتصفح (جرّب Chrome). هننشئ الفيديو بدون صوت — تقدر تحمّل الصوت لوحده وتدمجه بأي أداة مونتاج.");
+  }
+
+  // بننشئ الـ stream النهائي بكل المسارات موجودة *قبل* إنشاء المسجّل، ده أهم فرق —
+  // MediaRecorder بيسجل بس المسارات الموجودة وقت الإنشاء/البداية.
+  const combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+
   const mimeOptions = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
   const mimeType = mimeOptions.find(m => MediaRecorder.isTypeSupported(m)) || "video/webm";
-  const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 4_000_000 });
+  const recorder = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: 4_000_000 });
   const chunks = [];
   recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
 
@@ -1042,36 +1238,31 @@ async function generateAyahVideo() {
     document.getElementById("vResult").src = url;
     document.getElementById("vDownload").href = url;
     output.style.display = "block";
-    setStatus("تم إنشاء الفيديو ✅");
+    setStatus(anyRemote && audioTracks.length
+      ? "تم إنشاء الفيديو ✅ (تنبيه: بعض المقاطع اتشغلت من رابط مباشر بدل نسخة محلية، لو الصوت ناقص في جزء منها جرّب تاني)"
+      : "تم إنشاء الفيديو ✅");
     btn.disabled = false;
+    startVideoPreviewLoop();
   };
 
-  let audioTrackAdded = false;
   let queueIndex = 0;
   let globalT0 = performance.now();
 
   function playNext() {
     const item = queue[queueIndex];
     if (!item) { recorder.stop(); return; }
-    vAudio.src = item.audio;
-    vAudio.load();
-    vAudio.oncanplaythrough = () => {
-      vAudio.oncanplaythrough = null;
-      if (!audioTrackAdded) {
-        audioStream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
-        audioTrackAdded = true;
-      }
-      if (queueIndex === 0 && recorder.state === "inactive") {
-        recorder.start();
-        if (videoState.bgMode === "video" && videoState.bgVideoEl) {
-          videoState.bgVideoEl.currentTime = 0; videoState.bgVideoEl.play().catch(() => {});
-        }
-        loop();
-      }
+    const begin = () => {
       vAudio.play().catch(() => {
         setStatus("تعذّر تشغيل الصوت تلقائيًا — اضغط في أي مكان بالصفحة ثم أعد المحاولة.");
       });
     };
+    if (queueIndex === 0) {
+      begin();
+    } else {
+      vAudio.src = item.playUrl;
+      vAudio.oncanplaythrough = () => { vAudio.oncanplaythrough = null; begin(); };
+      vAudio.load();
+    }
     vAudio.onended = () => {
       queueIndex++;
       if (queueIndex < queue.length) playNext();
@@ -1098,6 +1289,12 @@ async function generateAyahVideo() {
   }
 
   setStatus(`جاري تسجيل ${queue.length} آية…`);
+  recorder.start(250);
+  if (videoState.bgMode === "video" && videoState.bgVideoEl) {
+    videoState.bgVideoEl.currentTime = 0;
+    videoState.bgVideoEl.play().catch(() => {});
+  }
+  loop();
   playNext();
 }
 

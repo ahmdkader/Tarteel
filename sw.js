@@ -1,4 +1,4 @@
-const CACHE = "tarteel-shell-v2";
+const CACHE = "tarteel-shell-v4";
 const SHELL = [
   "./",
   "./index.html",
