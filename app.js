@@ -114,24 +114,18 @@ async function getSurahTranslation(surahNumber, edition) {
   return map;
 }
 
+// بيانات الصفحة زي ما هي بالظبط في مصحف المدينة (نفس فواصل الأسطر الحقيقية)
+// المصدر: مجموعة بيانات "mushaf-layout" مفتوحة المصدر (604 صفحة × ~15 سطر لكل صفحة)
+const MUSHAF_LAYOUT_BASE = "https://raw.githubusercontent.com/zonetecde/mushaf-layout/refs/heads/main/mushaf";
+
 async function getMushafPage(pageNum) {
-  const cacheKey = `tr_mushafpage_${pageNum}`;
+  const cacheKey = `tr_mushafpage2_${pageNum}`;
   const cached = store.get(cacheKey, null);
   if (cached) return cached;
-  const data = await fetchJSON(`${API}/page/${pageNum}/quran-uthmani`);
-  const result = {
-    number: pageNum,
-    ayahs: data.data.ayahs.map(a => ({
-      number: a.number,
-      numberInSurah: a.numberInSurah,
-      text: a.text,
-      surahNumber: a.surah.number,
-      surahName: a.surah.name,
-      surahEnglishName: a.surah.englishName
-    }))
-  };
-  try { store.set(cacheKey, result); } catch { /* تخزين ممتلئ */ }
-  return result;
+  const padded = String(pageNum).padStart(3, "0");
+  const data = await fetchJSON(`${MUSHAF_LAYOUT_BASE}/page-${padded}.json`);
+  try { store.set(cacheKey, data); } catch { /* تخزين ممتلئ */ }
+  return data;
 }
 
 /* ---------------- تطبيع النص العربي (لمطابقة تقريبية في التسميع) ---------------- */
@@ -159,7 +153,49 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   if (!location.hash) location.hash = "#/home";
   render();
+  setupInstallPrompt();
 });
+
+/* ---------------- تثبيت حقيقي على الشاشة الرئيسية (مش شورت-كت بس) ---------------- */
+let deferredInstallPrompt = null;
+
+function isStandalone() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+function setupInstallPrompt() {
+  const banner = document.getElementById("installBanner");
+  const btn = document.getElementById("installBtn");
+  const dismiss = document.getElementById("installDismiss");
+  if (!banner) return;
+
+  if (isStandalone() || store.get("tr_install_dismissed", false)) return;
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    banner.style.display = "flex";
+  });
+
+  btn.onclick = async () => {
+    if (!deferredInstallPrompt) return;
+    banner.style.display = "none";
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    if (choice.outcome === "accepted") toast("تم تثبيت ترتيل ✅");
+  };
+
+  dismiss.onclick = () => {
+    banner.style.display = "none";
+    store.set("tr_install_dismissed", true);
+  };
+
+  window.addEventListener("appinstalled", () => {
+    banner.style.display = "none";
+    toast("تم تثبيت ترتيل على شاشتك الرئيسية ✅");
+  });
+}
 
 function parseHash() {
   const h = location.hash.replace(/^#\//, "");
@@ -439,6 +475,7 @@ async function renderMushafPage(pageNum) {
       </div>
       <button class="round-btn primary" id="btnPrevPage" ${pageNum <= 1 ? "disabled" : ""}>‹ السابقة</button>
     </div>
+    <div class="hint-note">اضغط طويلاً على أي سطر لفتح آياته في وضع القراءة والاستماع العادي.</div>
   `;
 
   const area = document.getElementById("mushafFlipArea");
@@ -446,26 +483,40 @@ async function renderMushafPage(pageNum) {
   try { page = await getMushafPage(pageNum); }
   catch { area.innerHTML = `<div class="empty-note">تعذّر تحميل الصفحة. تحقّق من الاتصال.</div>`; return; }
 
+  const firstSurahLine = page.lines.find(l => l.type === "surah-header");
+  const firstTextLine = page.lines.find(l => l.type === "text" && l.verseRange);
+  const currentSurahNum = firstTextLine ? parseInt(firstTextLine.verseRange.split(":")[0]) : (firstSurahLine ? parseInt(firstSurahLine.surah) : null);
   document.getElementById("pageSubtitle").textContent =
-    `صفحة ${toArabicDigits(pageNum)} — سُورَة ${page.ayahs[0].surahName}`;
+    `صفحة ${toArabicDigits(pageNum)}${firstSurahLine ? " — " + firstSurahLine.text : ""}`;
 
-  let html = "";
-  let lastSurah = null;
-  page.ayahs.forEach(a => {
-    if (a.surahNumber !== lastSurah) {
-      html += `<div class="page-surah-divider">سُورَة ${a.surahName}</div>`;
-      if (a.numberInSurah === 1 && a.surahNumber !== 1 && a.surahNumber !== 9) {
-        html += `<span class="basmala">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</span>`;
-      }
-      lastSurah = a.surahNumber;
+  let html = `<div class="mushaf-page mushaf-page-lines">`;
+  page.lines.forEach(line => {
+    if (line.type === "surah-header") {
+      html += `<div class="mushaf-surah-frame"><span>${line.text}</span></div>`;
+    } else if (line.type === "basmala") {
+      html += `<div class="mushaf-basmala-line">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</div>`;
+    } else {
+      const firstAyahInLine = line.verseRange ? line.verseRange.split("-")[0] : null;
+      html += `<div class="mushaf-line" data-verse="${firstAyahInLine || ""}">${line.text}</div>`;
     }
-    html += `<span class="ayah" data-surah="${a.surahNumber}" data-n="${a.numberInSurah}">${a.text}<span class="ayah-badge">${toArabicDigits(a.numberInSurah)}</span></span> `;
   });
-  area.innerHTML = `<div class="mushaf-page" id="mushafPage">${html}</div>
-    <div class="mushaf-page-footer">${toArabicDigits(pageNum)}</div>`;
+  html += `</div>`;
+  area.innerHTML = `${html}<div class="mushaf-page-footer">۝ ${toArabicDigits(pageNum)} ۝</div>`;
 
-  document.querySelectorAll("#mushafPage .ayah").forEach(el => {
-    el.onclick = () => navigate(`#/surah/${el.dataset.surah}?from=${el.dataset.n}&to=${el.dataset.n}`);
+  justifyMushafLines();
+
+  document.querySelectorAll("#mushafFlipArea .mushaf-line").forEach(el => {
+    let pressTimer = null;
+    const openIt = () => {
+      const v = el.dataset.verse;
+      if (!v) return;
+      const [s, a] = v.split(":");
+      navigate(`#/surah/${s}?from=${a}&to=${a}`);
+    };
+    el.addEventListener("touchstart", () => { pressTimer = setTimeout(openIt, 480); });
+    el.addEventListener("touchend", () => clearTimeout(pressTimer));
+    el.addEventListener("touchmove", () => clearTimeout(pressTimer));
+    el.addEventListener("dblclick", openIt);
   });
 
   document.getElementById("btnNextPage").onclick = () => { if (pageNum < MUSHAF_LAST_PAGE) navigate(`#/page/${pageNum + 1}`); };
@@ -494,6 +545,22 @@ async function jumpToSurahMushafPage(surahNumber) {
   } catch {
     navigate(`#/page/1`);
   }
+}
+
+// بيمد كل سطر أفقيًا (Scale) لحد ما يملأ عرض الصفحة زي التسطير الحقيقي في المصحف،
+// بدل ما السطر يفضل قصير أو يلف على سطرين.
+function justifyMushafLines() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll(".mushaf-line").forEach(el => {
+      el.style.transform = "none";
+      const containerWidth = el.parentElement.clientWidth;
+      const natural = el.scrollWidth;
+      if (!natural || !containerWidth) return;
+      const ratio = containerWidth / natural;
+      const clamped = Math.min(1.22, Math.max(0.92, ratio));
+      el.style.transform = `scaleX(${clamped})`;
+    });
+  });
 }
 
 function renderPlayerBar(surahNumber, reviewId) {
@@ -1190,22 +1257,28 @@ async function generateAyahVideo() {
   const anyRemote = queue.some(q => !q.local);
 
   const vAudio = new Audio();
-  vAudio.crossOrigin = "anonymous";
   vAudio.preload = "auto";
   vAudio.src = queue[0].playUrl;
 
   setStatus("بنجهّز المسجّل…");
+  const waitForAudio = () => new Promise((resolve, reject) => {
+    vAudio.oncanplaythrough = resolve;
+    vAudio.onerror = () => reject(new Error("audio-load-failed"));
+    vAudio.load();
+    setTimeout(() => reject(new Error("timeout")), 15000);
+  });
   try {
-    await new Promise((resolve, reject) => {
-      vAudio.oncanplaythrough = resolve;
-      vAudio.onerror = () => reject(new Error("audio-load-failed"));
-      vAudio.load();
-      setTimeout(() => reject(new Error("timeout")), 15000);
-    });
+    await waitForAudio();
   } catch {
-    setStatus("تعذّر تحميل صوت القارئ. جرّب قارئ تاني أو تحقّق من الاتصال.");
-    btn.disabled = false;
-    return;
+    // محاولة تانية قبل ما نستسلم — أحيانًا بتكون مشكلة شبكة عابرة على الموبايل
+    try {
+      setStatus("محاولة تانية لتحميل الصوت…");
+      await waitForAudio();
+    } catch {
+      setStatus(`تعذّر تحميل صوت القارئ (${state.reciter.name}). جرّب قارئ تاني، أو تأكد إن الاتصال بالإنترنت شغال، أو قلّل نطاق الآيات.`);
+      btn.disabled = false;
+      return;
+    }
   }
 
   let audioStream = null;
@@ -1344,9 +1417,10 @@ route("settings", async () => {
     </div>
     <div class="panel">
       <h4>تثبيت التطبيق</h4>
-      <p style="font-size:12.5px;color:var(--muted);line-height:1.9;margin:0 0 12px">
-        لتثبيت "ترتيل" كتطبيق على شاشتك الرئيسية: افتح قائمة المتصفح ثم اختر "إضافة إلى الشاشة الرئيسية" (Add to Home Screen). يعمل التطبيق بعدها حتى بدون إنترنت للسور التي فتحتها من قبل.
+      <p style="font-size:12.5px;color:var(--muted);line-height:1.9;margin:0 0 12px" id="installNote">
+        لتثبيت "ترتيل" كتطبيق حقيقي على شاشتك الرئيسية (مش مجرد اختصار) اضغط الزرار ده:
       </p>
+      <button class="btn-secondary" id="setInstall">📲 ثبّت التطبيق</button>
     </div>
     <div class="panel">
       <h4>البيانات</h4>
@@ -1356,6 +1430,20 @@ route("settings", async () => {
     <div class="notice">مصادر النصوص والتلاوات: Al Quran Cloud (api.alquran.cloud). التطبيق لا يستخدم أي بيانات صوتية خاصة بك سوى ما يلزم مؤقتًا لميزة التسميع داخل متصفحك، ولا يُرسل صوتك إلى أي خادم تابع للتطبيق.</div>
   `;
   document.getElementById("setReciter").onclick = () => openReciterSheet(() => routes.settings());
+  document.getElementById("setInstall").onclick = async () => {
+    if (isStandalone()) { toast("التطبيق مثبّت بالفعل ✅"); return; }
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      if (choice.outcome === "accepted") toast("تم تثبيت ترتيل ✅");
+      return;
+    }
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    document.getElementById("installNote").innerHTML = isIOS
+      ? `على آيفون: اضغط زر <b>المشاركة</b> (المربع وسهم فوقه) في متصفح Safari، ثم اختر <b>"إضافة إلى الشاشة الرئيسية"</b>.`
+      : `لسّه المتصفح مايداش الإذن ده مباشرة — افتح قائمة المتصفح (⋮) واختر <b>"تثبيت التطبيق"</b> أو <b>"إضافة إلى الشاشة الرئيسية"</b>. لو مش لاقيها، جرّب افتح الموقع بمتصفح Chrome.`;
+  };
   document.getElementById("clearCache").onclick = () => {
     Object.keys(localStorage).filter(k => k.startsWith("tr_surah_")).forEach(k => localStorage.removeItem(k));
     toast("تم مسح الملفات المؤقتة");
@@ -1369,3 +1457,7 @@ route("settings", async () => {
 
 /* اجعل navigate متاحة من HTML inline */
 window.navigate = navigate;
+
+window.addEventListener("resize", () => {
+  if (document.querySelector(".mushaf-line")) justifyMushafLines();
+});

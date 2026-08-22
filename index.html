@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0B3B36" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ترتيل" />
+<title>ترتيل — حفظ ومراجعة القرآن الكريم</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Amiri+Quran&family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="app"></div>
+
+<nav id="bottomNav" class="bottom-nav">
+  <button data-route="home" class="nav-btn active">
+    <span class="nav-icon">⌂</span><span>الرئيسية</span>
+  </button>
+  <button data-route="surahs" class="nav-btn">
+    <span class="nav-icon">☰</span><span>السور</span>
+  </button>
+  <button data-route="tracker" class="nav-btn">
+    <span class="nav-icon">◈</span><span>المراجعة</span>
+  </button>
+  <button data-route="settings" class="nav-btn">
+    <span class="nav-icon">⚙</span><span>الإعدادات</span>
+  </button>
+</nav>
+
+<div id="toast" class="toast"></div>
+<div id="installBanner" class="install-banner" style="display:none;">
+  <div class="install-banner-text">
+    <b>ثبّت ترتيل على شاشتك الرئيسية</b>
+    <span>يشتغل زي أي أبلكيشن عادي، حتى من غير نت</span>
+  </div>
+  <button id="installBtn">تثبيت</button>
+  <button id="installDismiss" aria-label="إغلاق">✕</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
